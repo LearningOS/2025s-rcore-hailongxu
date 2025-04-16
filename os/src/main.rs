@@ -95,10 +95,17 @@ fn kernel_log_info() {
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
+    // #[allow(clippy::zero_ptr)]
+    // unsafe { *(core::ptr::null::<u8>() as *mut u8) = 2 }; 
+
+
     clear_bss();
+    // unsafe { ((0x80000000usize-1) as *mut u8).write_volatile(0)};
     kernel_log_info();
     heap_alloc::init_heap();
     trap::init();
+
+
     loader::load_apps();
     trap::enable_timer_interrupt();
     timer::set_next_trigger();
