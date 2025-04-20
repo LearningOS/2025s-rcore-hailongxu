@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MapPermission;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -153,6 +154,70 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// return the count of task id called after the count added 1
+    fn add_1_call(&self,syscall_id:usize)->isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let count = &mut inner.tasks[current].called_count;
+        let r = count.iter().position(|(a,_b)|*a==syscall_id);
+        if let Some(i) = r {
+           let (_,c) = unsafe { count.get_unchecked_mut(i) };
+            *c += 1;
+            *c
+        } else {
+            -1
+        }
+    }
+    /// return the count of task id called
+    fn count_of_call(&self,syscall_id:usize)->isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let count = &mut inner.tasks[current].called_count;
+        let r = count.iter().position(|(a,_b)|*a==syscall_id);
+        if let Some(i) = r {
+            let (_,c) = unsafe { count.get_unchecked(i) };
+            *c
+        } else {
+            -1
+        }
+    }
+
+    fn attribute(&self, vpn: crate::mm::VirtPageNum)->Option<crate::mm::PTEFlags> {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let ms = &mut inner.tasks[current].memory_set;
+        let Some(pte) = ms.translate(vpn) else {
+            return None;
+        };
+        Some(pte.flags())
+    }
+
+    /// insert continue address range of framed to current task 
+    pub fn insert_framed_area(
+        &self,
+        start_va: crate::mm::VirtAddr,
+        end_va: crate::mm::VirtAddr,
+        permission: crate::mm::MapPermission,
+    ) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let ms = &mut inner.tasks[current].memory_set;
+        ms.insert_framed_area(start_va, end_va, permission|MapPermission::U);
+    }
+
+    /// remove continue address range of framed from current task 
+    pub fn remove_framed_area(
+        &self,
+        start_va: crate::mm::VirtAddr,
+        end_va: crate::mm::VirtAddr,
+        permission: crate::mm::MapPermission,
+    )->bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let ms = &mut inner.tasks[current].memory_set;
+        ms.remove_framed_area(start_va, end_va, permission|MapPermission::U)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +266,38 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+
+/// record the count of syscall_id called in currrent task
+pub fn current_syscall_added(syscall_id: usize)->isize {
+    TASK_MANAGER.add_1_call(syscall_id)
+}
+
+/// record the count of syscall_id called in currrent task
+pub fn current_syscall_count(syscall_id: usize)->isize {
+    TASK_MANAGER.count_of_call(syscall_id)
+}
+
+/// get the pteflag of a Virtual Address
+pub fn attribute_of_vpn(vpn: crate::mm::VirtPageNum)->Option<crate::mm::PTEFlags> {
+    TASK_MANAGER.attribute(vpn)
+}
+
+/// insert framed area
+pub fn insert_framed_area(
+    start_va: crate::mm::VirtAddr,
+    end_va: crate::mm::VirtAddr,
+    permission: crate::mm::MapPermission,
+) {
+    TASK_MANAGER.insert_framed_area(start_va, end_va, permission);
+}
+
+/// remove framed area
+pub fn remove_framed_area(
+    start_va: crate::mm::VirtAddr,
+    end_va: crate::mm::VirtAddr,
+    // permission: crate::mm::MapPermission,
+)->bool {
+    TASK_MANAGER.remove_framed_area(start_va, end_va, MapPermission::U)
 }
