@@ -68,6 +68,10 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    // /// trace count
+    // pub called_count: [(usize,isize);8],
+
 }
 
 impl TaskControlBlockInner {

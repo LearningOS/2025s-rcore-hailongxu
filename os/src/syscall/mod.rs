@@ -14,7 +14,7 @@ const SYSCALL_READ: usize = 63;
 /// write syscall
 const SYSCALL_WRITE: usize = 64;
 /// exit syscall
-const SYSCALL_EXIT: usize = 93;
+pub(crate) const SYSCALL_EXIT: usize = 93;
 /// yield syscall
 const SYSCALL_YIELD: usize = 124;
 /// setpriority syscall
@@ -24,7 +24,7 @@ const SYSCALL_GET_TIME: usize = 169;
 /// getpid syscall
 const SYSCALL_GETPID: usize = 172;
 /// sbrk syscall
-const SYSCALL_SBRK: usize = 214;
+pub(crate) const SYSCALL_SBRK: usize = 214;
 /// munmap syscall
 const SYSCALL_MUNMAP: usize = 215;
 /// fork syscall
