@@ -6,7 +6,7 @@ use crate::{
     mm::{translated_refmut, translated_str, MapPermission, PTEFlags},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, TaskControlBlock,
     },
 };
 
@@ -55,13 +55,12 @@ pub fn sys_exec(path: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_exec", current_task().unwrap().pid.0);
     let token = current_user_token();
     let path = translated_str(token, path);
-    if let Some(data) = get_app_data_by_name(path.as_str()) {
-        let task = current_task().unwrap();
-        task.exec(data);
-        0
-    } else {
-        -1
-    }
+    let Some((data,_name)) = get_app_data_by_name(path.as_str()) else {
+        return -1;
+    };
+    let task = current_task().unwrap();
+    task.exec(data/*,name */);
+    0
 }
 
 /// If there is not a child process whose pid is same as given, return -1.
@@ -245,19 +244,36 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    let Some((data,_name)) = get_app_data_by_name(path.as_str()) else {
+        return -1;
+    };
+    let task = current_task().unwrap();
+    let new_task = TaskControlBlock::spawn(Some(task), data/*, name */);
+    let pid = new_task.getpid() as isize;
+    add_task(new_task);
+    pid
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if prio > 1 {
+        current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .priority = prio as usize;
+        prio
+    } else {
+        -1
+    }
 }

@@ -106,9 +106,11 @@ lazy_static! {
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
     /// but we have user_shell, so we don't need to change it.
-    pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new(TaskControlBlock::new(
-        get_app_data_by_name("ch5b_initproc").unwrap()
-    ));
+    pub static ref INITPROC: Arc<TaskControlBlock> = {
+        let app = get_app_data_by_name("ch5b_initproc").unwrap();
+        Arc::new(TaskControlBlock::new(
+            app.0//,app.1
+        ))};
 }
 
 ///Add init process to the manager
