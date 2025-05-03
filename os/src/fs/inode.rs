@@ -11,7 +11,7 @@ use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::*;
-use easy_fs::{EasyFileSystem, Inode};
+use easy_fs::{EasyFileSystem, Inode, DiskInodeType};
 use lazy_static::*;
 
 /// inode in memory
@@ -21,6 +21,7 @@ pub struct OSInode {
     readable: bool,
     writable: bool,
     inner: UPSafeCell<OSInodeInner>,
+    inode_id: u32,
 }
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
@@ -30,11 +31,12 @@ pub struct OSInodeInner {
 
 impl OSInode {
     /// create a new inode in memory
-    pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
+    pub fn new(readable: bool, writable: bool, inode: Arc<Inode>, inode_id:u32) -> Self {
         Self {
             readable,
             writable,
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
+            inode_id
         }
     }
     /// read all data from the inode
@@ -52,6 +54,11 @@ impl OSInode {
             v.extend_from_slice(&buffer[..len]);
         }
         v
+    }
+
+    /// get inodeid
+    pub fn inodeid(&self)->u32 {
+        self.inode_id
     }
 }
 
@@ -101,26 +108,52 @@ impl OpenFlags {
     }
 }
 
+/// create hard link
+pub fn create_hardlink(old_name:&str,new_name:&str)->isize {
+    if let None = ROOT_INODE.create_hardlink(old_name, new_name) {
+        -1
+    } else {
+        0
+    }
+}
+
+/// delete hard link
+pub fn delete_hardlink(name:&str)->isize {
+   ROOT_INODE.remove(name)
+}
+
+/// file stat
+pub fn fstat(osinode:&OSInode)->Option<DiskInodeType> {
+    let inodeid = osinode.inode_id;
+    // let inode = osinode.inner.exclusive_access();
+    // let inode = inode.inode;
+    // inode.attribue(name)
+    let Some(attr) = ROOT_INODE.inodetype(inodeid) else {
+        return None;
+    };
+    Some(attr)
+}
+
 /// Open a file
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
     if flags.contains(OpenFlags::CREATE) {
-        if let Some(inode) = ROOT_INODE.find(name) {
+        if let Some((inode,inode_id)) = ROOT_INODE.find(name) {
             // clear size
             inode.clear();
-            Some(Arc::new(OSInode::new(readable, writable, inode)))
+            Some(Arc::new(OSInode::new(readable, writable, inode, inode_id)))
         } else {
             // create file
             ROOT_INODE
-                .create(name)
-                .map(|inode| Arc::new(OSInode::new(readable, writable, inode)))
+                .create2(name)
+                .map(|(inode,inode_id)| Arc::new(OSInode::new(readable, writable, inode, inode_id)))
         }
     } else {
-        ROOT_INODE.find(name).map(|inode| {
+        ROOT_INODE.find(name).map(|(inode,inode_id)| {
             if flags.contains(OpenFlags::TRUNC) {
                 inode.clear();
             }
-            Arc::new(OSInode::new(readable, writable, inode))
+            Arc::new(OSInode::new(readable, writable, inode, inode_id))
         })
     }
 }
