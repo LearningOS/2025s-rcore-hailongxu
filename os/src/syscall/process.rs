@@ -146,17 +146,79 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     }
 }
 
+fn write_value<T>(src:&T,dst:&mut T) {
+    let src = src as *const T as *const u8;
+    let dst = dst as * const T as *mut u8;
+    let len = core::mem::size_of::<T>();
+    let src = unsafe { core::slice::from_raw_parts(src, len) };
+    let dst = unsafe { core::slice::from_raw_parts_mut(dst, len) };
+    write_bytes(src,dst)
+}
+fn write_bytes(src:&[u8],dst:&mut [u8]) {
+    use crate::mm::translated_byte_buffer;
+    use crate::task::current_user_token;
+
+    let len = core::cmp::min(dst.len(),src.len());
+    let dst = dst.as_mut_ptr();
+    let bytes_dst = translated_byte_buffer(current_user_token(), dst, len);
+    let bytes_src = src;
+
+    let mut s = 0;
+    for bytes in bytes_dst {
+        let len = bytes.len();
+        bytes.copy_from_slice(&bytes_src[s..s+len]);
+        s += len;
+    }
+}
+
+#[allow(unused)]
+fn read_value<T>(src:&T, dst:&mut T) {
+    let src = src as *const T as *const u8;
+    let dst = dst as *const T as *mut u8;
+    let len = core::mem::size_of::<T>();
+    let src = unsafe { core::slice::from_raw_parts(src, len) };
+    let dst = unsafe { core::slice::from_raw_parts_mut(dst, len) };
+    read_bytes(src,dst)
+}
+
+fn read_bytes(src:&[u8],dst:&mut[u8]) {
+    use crate::mm::translated_byte_buffer;
+    use crate::task::current_user_token;
+
+    let len = core::cmp::min(src.len(),dst.len());
+    let src = src.as_ptr();
+    let bytes_src = translated_byte_buffer(current_user_token(), src, len);
+    let bytes_dst = dst;
+
+    let mut s = 0;
+    for bytes in bytes_src {
+        let len = bytes.len();
+        bytes_dst[s..s+len].copy_from_slice(bytes);
+        s += len;
+    }
+}
+
 /// get_time syscall
 ///
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+
+    let us = crate::timer::get_time_us();
+    let timeval = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+
+    let dst = unsafe { ts.as_mut().unwrap() };
+    write_value(&timeval,dst);
+
+    0
 }
 
 /// mmap syscall

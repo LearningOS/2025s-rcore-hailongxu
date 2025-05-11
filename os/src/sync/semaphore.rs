@@ -35,6 +35,9 @@ impl Semaphore {
         let mut inner = self.inner.exclusive_access();
         inner.count += 1;
         if inner.count <= 0 {
+            // if let Some(task) = DeadLockCheck::take_next_runnable_task(&mut inner.wait_queue) {
+            //     wakeup_task(task);
+            // } else
             if let Some(task) = inner.wait_queue.pop_front() {
                 wakeup_task(task);
             }

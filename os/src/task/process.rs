@@ -2,18 +2,20 @@
 
 use super::id::RecycleAllocator;
 use super::manager::insert_into_pid2process;
-use super::TaskControlBlock;
+use super::{current_process, TaskControlBlock};
 use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::vec_deque::VecDeque;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::ops::IndexMut;
 
 /// Process Control Block
 pub struct ProcessControlBlock {
@@ -49,6 +51,179 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// deadlock check
+    pub(crate) deadlock_check: DeadLockCheck,
+}
+
+pub(crate) enum Kind {
+    Add(usize),
+    Dec(usize),
+}
+#[derive(Clone,Debug)]
+pub(crate) struct DeadLockCheck {
+    pub enabled: bool,
+    pub avaiable: Vec<usize>,
+    pub allo: Vec<Vec<usize>>,
+    pub need: Vec<Vec<usize>>,
+}
+
+impl DeadLockCheck {
+    fn new()->Self {
+        DeadLockCheck {
+            enabled: false,
+            avaiable: Vec::new(),
+            allo: Vec::new(),
+            need: Vec::new(),
+        }
+    }
+    fn update_or_insert(vec: &mut Vec<Vec<usize>>,thid:usize,rid:usize,count:Kind) {
+        match count {
+            Kind::Add(cnt) =>{
+                if vec.len() <= thid+1 {
+                    vec.resize(thid+1, Vec::new());
+                }
+                let vec = vec.index_mut(thid);
+                if vec.len() <= rid+1 {
+                    vec.resize(rid+1, 0);
+                }
+                if cnt > 0 {
+                    vec[rid] += cnt;
+                }
+            }
+            Kind::Dec(cnt) => {
+                let v = &mut vec[thid][rid];
+                assert!(*v >= cnt);
+                *v -= cnt;
+            }
+        }
+    }
+    pub fn add_work(&mut self, rid:usize, count:usize) {
+        self.avaiable_update_kind(rid, Kind::Add(count));
+    }
+    fn avaiable_update_kind(&mut self, rid:usize, count:Kind) {
+        if !self.enabled {
+            return;
+        }
+        let index = rid;
+        match count {
+            Kind::Add(cnt) => {
+                if self.avaiable.len() < index + 1 {
+                    self.avaiable.resize(index+1, 0);
+                }
+                self.avaiable[index] += cnt;
+            }
+            Kind::Dec(cnt) =>
+                self.avaiable[index] -= cnt,
+        }
+    }
+    pub fn update_need(&mut self, tid:usize, rid:usize, count:Kind) {
+        if !self.enabled {
+            return;
+        }
+        Self::update_or_insert(&mut self.need, tid,rid,count);
+        Self::update_or_insert(&mut self.allo, tid,rid,Kind::Add(0));
+    }
+
+    pub fn move_need_to_allo(&mut self,tid:usize, rid:usize, count:usize) {
+        if !self.enabled {
+            return;
+        }
+        // println!("move_need_to_allo work dec");
+        self.avaiable_update_kind(rid,Kind::Dec(count));
+        // println!("move_need_to_allo mutex_task_need");
+        Self::update_or_insert(&mut self.need, tid,rid,Kind::Dec(count));
+        // println!("move_need_to_allo mutex_task_allo");
+        Self::update_or_insert(&mut self.allo, tid,rid,Kind::Add(count));
+    }
+
+    pub fn release_alloc_to_avaiable(&mut self,tid:usize, rid:usize, count:usize) {
+        if !self.enabled {
+            return;
+        }
+        Self::update_or_insert(&mut self.allo, tid,rid,Kind::Dec(count));
+        self.avaiable[rid] += count;
+    }
+
+    pub fn release_thread_res(&mut self, tid: usize) {
+        if !self.enabled {
+            return;
+        }
+
+        self.need[tid].iter_mut().for_each(|e|*e=0);
+        let avaiable = &mut self.avaiable;
+        let allo = core::mem::take(&mut self.allo[tid]);
+        if avaiable.len() < allo.len() {
+            avaiable.resize(allo.len(), 0);
+        }
+        avaiable.iter_mut()
+            .zip(allo.iter())
+            .for_each(|(ava,al)|*ava+=*al);
+    }
+
+    pub fn will_deadlock(&self)->(bool,Option<usize>) {
+        if !self.enabled {
+            return (false,None);
+        }
+        let mut work = self.avaiable.clone();
+        let mut finished = vec![false;self.need.len()];
+        let mut safe_path = Vec::with_capacity(self.need.len());
+        let mut passed = false;
+        loop {
+            let mut added = false;
+            for i in 0..self.need.len() {
+                if finished[i] {
+                    continue;
+                }
+                let needed = self.need[i].as_slice();
+                assert!(needed.len() <= work.len());
+                if ! needed.iter().zip(work.iter().take(needed.len()))
+                    .all(|(need,w)|need<=w) {
+                    continue;
+                }
+                work.iter_mut().take(self.allo[i].len())
+                    .zip(self.allo[i].iter())
+                    .for_each(|(w,a)|*w += a);
+                finished[i] = true;
+                added = true;
+                safe_path.push(i);
+            }
+            if finished.iter().all(|e|e==&true) {
+                passed = true;
+                break;
+            }
+            if !added {
+                break;
+            }
+        }
+        if passed {
+            assert!(safe_path.capacity() == safe_path.len());
+        }
+        (!passed,safe_path.first().copied())
+    }
+
+    #[allow(dead_code)]
+    pub fn take_next_runnable_task(wait_queue: &mut VecDeque<Arc<TaskControlBlock>>)->Option<Arc<TaskControlBlock>> {
+        let process = current_process();
+        let process_inner = process.inner_exclusive_access();
+        let is_deadlock = process_inner.deadlock_check.will_deadlock();
+        if is_deadlock.0 {
+            return None;
+        }
+        drop(process_inner);
+        drop(process);
+        if let Some(thid) = is_deadlock.1 {
+            if let Some(pos)  = wait_queue.iter().position(|e| {
+                thid == e.inner_exclusive_access().res.as_ref().unwrap().tid
+            }) {
+                let rr = wait_queue.remove(pos);
+                return rr;
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +294,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_check: DeadLockCheck::new(),
                 })
             },
         });
@@ -245,6 +421,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_check: DeadLockCheck::new(),
                 })
             },
         });
